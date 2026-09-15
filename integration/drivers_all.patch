@@ -1,0 +1,12 @@
+diff --git a/drivers/all.go b/drivers/all.go
+index 601c7bf..559b686 100644
+--- a/drivers/all.go
++++ b/drivers/all.go
+@@ -37,6 +37,7 @@ import (
+ 	_ "github.com/OpenListTeam/OpenList/v4/drivers/dropbox"
+ 	_ "github.com/OpenListTeam/OpenList/v4/drivers/emby"
+ 	_ "github.com/OpenListTeam/OpenList/v4/drivers/febbox"
++	_ "github.com/OpenListTeam/OpenList/v4/drivers/feishu"
+ 	_ "github.com/OpenListTeam/OpenList/v4/drivers/ftp"
+ 	_ "github.com/OpenListTeam/OpenList/v4/drivers/github"
+ 	_ "github.com/OpenListTeam/OpenList/v4/drivers/github_releases"
