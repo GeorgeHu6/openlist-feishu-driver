@@ -54,11 +54,163 @@ OpenList 或飞书 API 后续可能发生变化。集成到其他 OpenList 版�
 
 ```text
 .
+├── Dockerfile                 # 可复现的多阶段镜像构建
+├── docker-compose.yml         # 默认仅监听宿主机 127.0.0.1
 ├── drivers/feishu/            # 驱动实现和测试
 ├── integration/
 │   └── drivers_all.patch      # 在 OpenList drivers/all.go 中注册驱动
+├── scripts/
+│   └── prepare-openlist-source.sh
 └── README.md
 ```
+
+## Docker 快速启动
+
+为避免在 Docker 构建缓存中意外包含 OpenList 的数据库、配置或 OAuth 令牌，镜像只使用由 `git archive` 生成的干净上游源码快照。准备脚本会从 OpenList 官方前端仓库下载、校验并加入与后端匹配的前端资源，然后 Docker 注入飞书驱动、运行驱动测试并生成最终镜像。宿主机不需要安装 Go。
+
+### 准备构建上下文
+
+先准备一个 OpenList Git 源码目录。以下命令从指定 Git revision 导出已跟踪的源码，不会复制 `runtime-data`、`data.db` 或其他未跟踪文件：
+
+```bash
+./scripts/prepare-openlist-source.sh /path/to/OpenList HEAD
+```
+
+对 `HEAD`、分支或普通提交，脚本会自动使用官方 `edge` 前端；对精确的正式版本标签，脚本会使用同名正式前端。例如：
+
+```bash
+./scripts/prepare-openlist-source.sh /path/to/OpenList v4.2.6
+```
+
+准备结果位于被 `.gitignore` 排除的 `.docker/openlist-src`。前端压缩包会按 GitHub Release API 提供的 SHA-256 摘要进行验证。若后端含有初始化 API、前端却没有初始化向导代码，脚本会直接报错，防止生成版本不匹配的镜像。
+
+如需显式指定前端发行标签，可使用第三个参数：
+
+```bash
+./scripts/prepare-openlist-source.sh /path/to/OpenList HEAD edge
+```
+
+只有在已经自行准备并确认 `public/dist` 与后端兼容时，才应使用 `local`：
+
+```bash
+./scripts/prepare-openlist-source.sh /path/to/OpenList HEAD local
+```
+
+访问 GitHub API 触发匿名限流时，可以通过专用变量提供 token；脚本不会读取可能属于其他工具的 `GITHUB_TOKEN`：
+
+```bash
+OPENLIST_GITHUB_TOKEN=github_pat_xxx \
+  ./scripts/prepare-openlist-source.sh /path/to/OpenList HEAD
+```
+
+### 构建并启动
+
+```bash
+docker compose up -d --build
+```
+
+首次构建需要下载基础镜像和 Go 依赖，耗时取决于网络。查看状态和日志：
+
+```bash
+docker compose ps
+docker compose logs -f openlist
+```
+
+Compose 在 Linux 上默认让**构建阶段**使用宿主机网络，以避免 Docker daemon 的 DNS 无法解析 Alpine/GitHub 域名；这不影响最终服务的运行网络。如果当前 Docker 平台不支持 host build network，可改用：
+
+```bash
+DOCKER_BUILD_NETWORK=default docker compose build
+```
+
+如果 `apk add` 同时把所有常见包报告为 `no such package`，并在前面出现 `DNS: transient error`，实际原因是软件仓库域名解析失败。Dockerfile 会自动重试五次；持续失败时应检查 Docker daemon 的 DNS 或代理配置。
+
+Go 依赖默认通过 `https://goproxy.cn,direct` 下载，并使用 `sum.golang.google.cn` 校验；模块目录和编译缓存由 BuildKit 持久化。如果需要改用其他代理，可在 `.env` 中配置：
+
+```dotenv
+GO_MODULE_PROXY=https://proxy.golang.org,direct
+GO_SUMDB=sum.golang.org
+```
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:5244/ping
+```
+
+返回 `pong` 后访问：
+
+```text
+http://127.0.0.1:5244/
+```
+
+命名卷首次启动时没有管理员账号。打开 Web 页面并按初始化向导设置管理员用户名、密码和站点名称。管理员创建后，如需通过命令行修改密码可执行：
+
+```bash
+sudo docker compose exec openlist ./openlist admin set YOUR_PASSWORD
+```
+
+### 网络和数据持久化
+
+Compose 默认发布端口：
+
+```text
+127.0.0.1:5244 -> container:5244
+```
+
+因此只有宿主机可以访问。需要允许局域网连接时，可在当前目录创建不会提交到 Git 的 `.env`：
+
+```dotenv
+OPENLIST_BIND=0.0.0.0
+OPENLIST_PORT=5244
+```
+
+远程访问应在 OpenList 前配置 HTTPS 反向代理或通过可信 VPN，不要把普通 HTTP 和 WebDAV Basic Auth 直接暴露到公网。
+
+运行数据保存在 Docker 命名卷 `openlist-feishu_openlist-data`，重新构建或删除容器不会丢失配置、数据库和轮换后的 `refresh_token`：
+
+```bash
+docker volume inspect openlist-feishu_openlist-data
+```
+
+停止服务但保留数据：
+
+```bash
+docker compose down
+```
+
+不要执行 `docker compose down -v`，除非确定要删除 OpenList 数据和飞书 OAuth 持久化信息。
+
+### 自定义构建
+
+使用其他兼容的 OpenList 标签、分支或提交时，重新准备源码快照：
+
+```bash
+./scripts/prepare-openlist-source.sh /path/to/OpenList OTHER_GIT_REF
+docker compose build
+docker compose up -d
+```
+
+准备脚本会自动为正式标签选择同名正式前端，为其他 revision 选择 `edge` 前端。不要把旧源码目录中残留的 `public/dist` 直接配给较新的后端，否则新实例可能只有登录页而没有初始化向导。
+
+补丁如果不再适用于新版本，构建会在 `git apply --check` 阶段明确失败，而不会产出未注册飞书驱动的镜像。
+
+直接构建和命名镜像：
+
+```bash
+docker build \
+  --network=host \
+  -t openlist-feishu:v4.2.6 .
+```
+
+发布到 GitHub Container Registry 的示例：
+
+```bash
+docker tag openlist-feishu:v4.2.6 ghcr.io/georgehu6/openlist-feishu:v4.2.6
+docker login ghcr.io
+docker push ghcr.io/georgehu6/openlist-feishu:v4.2.6
+```
+
+发布镜像时需要同时保留对应源码，并遵守 OpenList 的 AGPL-3.0 许可证。
 
 ## 集成和编译
 
@@ -147,7 +299,7 @@ go build -tags=jsoniter -o bin/openlist .
 ./bin/openlist --data /path/to/openlist-data server
 ```
 
-首次运行会创建 `config.json` 和数据库。设置管理员密码：
+首次运行会创建 `config.json` 和数据库。打开 Web 页面并按初始化向导创建管理员。管理员已经存在时，可以通过命令行修改密码：
 
 ```bash
 ./bin/openlist --data /path/to/openlist-data admin set YOUR_PASSWORD

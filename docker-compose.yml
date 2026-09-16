@@ -1,0 +1,27 @@
+name: openlist-feishu
+
+services:
+  openlist:
+    build:
+      context: .
+      # The build needs Alpine, GitHub and Go module downloads. Host networking
+      # avoids Docker daemon DNS failures on Linux; set
+      # DOCKER_BUILD_NETWORK=default when host networking is unavailable.
+      network: ${DOCKER_BUILD_NETWORK:-host}
+      args:
+        BASE_IMAGE_TAG: ${BASE_IMAGE_TAG:-base}
+        GO_MODULE_PROXY: ${GO_MODULE_PROXY:-https://goproxy.cn,direct}
+        GO_SUMDB: ${GO_SUMDB:-sum.golang.google.cn}
+    image: ${OPENLIST_IMAGE:-openlist-feishu:local}
+    container_name: openlist-feishu
+    restart: unless-stopped
+    ports:
+      - "${OPENLIST_BIND:-127.0.0.1}:${OPENLIST_PORT:-5244}:5244"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      UMASK: "022"
+    volumes:
+      - openlist-data:/opt/openlist/data
+
+volumes:
+  openlist-data:

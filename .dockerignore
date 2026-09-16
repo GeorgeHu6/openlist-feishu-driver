@@ -1,0 +1,14 @@
+.git
+.github
+.agents
+.codex
+.env
+bin
+build
+data
+runtime-data
+*.db
+*.db-shm
+*.db-wal
+*.log
+coverage.*
