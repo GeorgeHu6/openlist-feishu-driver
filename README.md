@@ -54,8 +54,8 @@ OpenList 或飞书 API 后续可能发生变化。集成到其他 OpenList 版�
 
 ```text
 .
-├── Dockerfile                 # 可复现的多阶段镜像构建
-├── Dockerfile.acr             # ACR 从 GitHub 源码进行云端构建
+├── Dockerfile                 # ACR/GitHub 云端构建入口
+├── Dockerfile.local           # 使用已准备源码的本地构建入口
 ├── docker-compose.yml         # 默认仅监听宿主机 127.0.0.1
 ├── drivers/feishu/            # 驱动实现和测试
 ├── integration/
@@ -200,6 +200,7 @@ docker compose up -d
 ```bash
 docker build \
   --network=host \
+  -f Dockerfile.local \
   -t openlist-feishu:v4.2.6 .
 ```
 
@@ -215,26 +216,26 @@ docker push ghcr.io/georgehu6/openlist-feishu:v4.2.6
 
 ## 阿里云 ACR 自动构建
 
-仓库根目录的普通 `Dockerfile` 使用本机生成且不提交的 `.docker/openlist-src`，因此不能直接用于 ACR 的 GitHub 云端构建。ACR 构建规则应改用 `Dockerfile.acr`。该文件会在构建机内完成以下操作：
+仓库根目录的 `Dockerfile` 可以直接用于 ACR 的 GitHub 云端构建。该文件会在构建机内完成以下操作：
 
 1. 拉取固定提交 `5447ecb07202c16b8d86d60c68266ac4e0053997` 的 OpenList 后端；
 2. 下载官方 `edge` 前端并按 GitHub Release 提供的 SHA-256 校验；
 3. 检查前端包含与后端匹配的初始化接口；
 4. 注入飞书驱动、运行驱动测试并编译最终镜像。
 
-在 ACR 控制台中使用以下构建规则：
+ACR 个人版自动创建的内置规则可直接使用：
 
 | 配置项 | 值 |
 | --- | --- |
 | 类型 | Tag |
 | Branch/Tag | `tags:release-v$version` |
 | 构建上下文目录 | `/` |
-| Dockerfile 文件名 | `Dockerfile.acr` |
+| Dockerfile 文件名 | `Dockerfile` |
 | 镜像版本 | `$version` |
 | 海外机器构建 | 开启 |
 | 不使用缓存 | 关闭 |
 
-如果控制台使用新版命名捕获组语法，可将 Branch/Tag 改为 `release-v(?<version>.*)`，镜像版本改为 `${version}`。正则构建规则只能由匹配的 Git tag push 自动触发，不能在控制台手动构建。
+`$version` 是 ACR 内置规则使用的系统变量。个人版控制台在手工添加规则时可能只允许静态镜像版本，无法输入 `$version`；这种情况下请保留现有内置规则，不需要重新创建。如果内置规则已被删除，则为每次发布创建静态规则，例如 Branch/Tag 填 `tags:release-v0.1.0`、镜像版本填 `0.1.0`。
 
 首次发布建议从 `v0.1.0` 开始。提交并推送代码后创建触发标签：
 

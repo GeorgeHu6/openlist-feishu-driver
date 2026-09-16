@@ -4,6 +4,7 @@ services:
   openlist:
     build:
       context: .
+      dockerfile: Dockerfile.local
       # The build needs Alpine, GitHub and Go module downloads. Host networking
       # avoids Docker daemon DNS failures on Linux; set
       # DOCKER_BUILD_NETWORK=default when host networking is unavailable.
