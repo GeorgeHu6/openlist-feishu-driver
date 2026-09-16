@@ -1,0 +1,105 @@
+# syntax=docker/dockerfile:1
+
+ARG BASE_IMAGE_TAG=base
+
+FROM alpine:edge AS builder
+
+ARG OPENLIST_REPOSITORY=https://github.com/OpenListTeam/OpenList.git
+ARG OPENLIST_REF=5447ecb07202c16b8d86d60c68266ac4e0053997
+ARG OPENLIST_VERSION=v4.2.6-14-g5447ecb0
+ARG FRONTEND_RELEASE=edge
+ARG GO_MODULE_PROXY=https://goproxy.cn,direct
+ARG GO_SUMDB=sum.golang.google.cn
+
+WORKDIR /src
+
+ENV GOPATH=/go \
+    GOTOOLCHAIN=auto \
+    GOPROXY=${GO_MODULE_PROXY} \
+    GOSUMDB=${GO_SUMDB}
+
+RUN set -eux; \
+    attempt=1; \
+    while ! apk add --no-cache bash ca-certificates curl gcc git go jq musl-dev; do \
+        if [ "${attempt}" -ge 5 ]; then \
+            echo "apk failed after ${attempt} attempts" >&2; \
+            exit 1; \
+        fi; \
+        attempt=$((attempt + 1)); \
+        sleep $((attempt * 3)); \
+    done
+
+# Pin the upstream backend to a full commit instead of building a moving branch.
+RUN set -eux; \
+    git init .; \
+    git remote add origin "${OPENLIST_REPOSITORY}"; \
+    attempt=1; \
+    until git fetch --depth 1 origin "${OPENLIST_REF}"; do \
+        if [ "${attempt}" -ge 5 ]; then \
+            echo "git fetch failed after ${attempt} attempts" >&2; \
+            exit 1; \
+        fi; \
+        attempt=$((attempt + 1)); \
+        sleep $((attempt * 3)); \
+    done; \
+    git checkout --detach FETCH_HEAD; \
+    test "$(git rev-parse HEAD)" = "${OPENLIST_REF}"
+
+COPY scripts/download-openlist-frontend.sh /usr/local/bin/download-openlist-frontend
+
+# Non-release backend commits use the official edge frontend, matching the
+# upstream OpenList beta build process.
+RUN chmod +x /usr/local/bin/download-openlist-frontend \
+    && download-openlist-frontend "${FRONTEND_RELEASE}" /src/public/dist \
+    && if grep -q '"/init_status"' server/router.go; then \
+         grep -R -a -q -E '/api/public/init_status|/init_status' public/dist; \
+       fi
+
+COPY drivers/feishu ./drivers/feishu
+COPY integration/drivers_all.patch /tmp/drivers_all.patch
+
+RUN git apply --check /tmp/drivers_all.patch \
+    && git apply /tmp/drivers_all.patch \
+    && gofmt -w drivers/feishu/*.go drivers/all.go \
+    && go test ./drivers/feishu \
+    && mkdir -p bin \
+    && web_version="$(cat public/dist/VERSION 2>/dev/null || printf unknown)" \
+    && go build -tags=jsoniter -ldflags="-w -s \
+       -X 'github.com/OpenListTeam/OpenList/v4/internal/conf.Version=${OPENLIST_VERSION}' \
+       -X 'github.com/OpenListTeam/OpenList/v4/internal/conf.WebVersion=${web_version}'" \
+       -o bin/openlist .
+
+FROM openlistteam/openlist-base-image:${BASE_IMAGE_TAG} AS runtime
+
+ARG UID=1001
+ARG GID=1001
+ARG USER=openlist
+
+LABEL org.opencontainers.image.title="OpenList with Feishu Drive" \
+      org.opencontainers.image.description="OpenList with the user-OAuth Feishu Drive driver" \
+      org.opencontainers.image.source="https://github.com/GeorgeHu6/openlist-feishu-driver" \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
+
+WORKDIR /opt/openlist
+
+RUN addgroup -g "${GID}" "${USER}" \
+    && adduser -D -u "${UID}" -G "${USER}" "${USER}" \
+    && mkdir -p /opt/openlist/data \
+    && chown -R "${UID}:${GID}" /opt/openlist
+
+COPY --from=builder --chmod=755 --chown=${UID}:${GID} /src/bin/openlist ./openlist
+COPY --from=builder --chmod=755 --chown=${UID}:${GID} /src/entrypoint.sh /entrypoint.sh
+
+USER ${USER}
+
+ENV TZ=Asia/Shanghai \
+    UMASK=022 \
+    RUN_ARIA2=false
+
+VOLUME ["/opt/openlist/data"]
+EXPOSE 5244
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget -q --spider http://127.0.0.1:5244/ping || exit 1
+
+ENTRYPOINT ["/entrypoint.sh"]
